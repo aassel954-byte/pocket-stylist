@@ -408,18 +408,76 @@ function backNext() {
 }
 
 function onbStep1() {
+  const d = S.ob;
+  const h = d.height || 178, w = d.weight || 85;
+
+  function selHtml(id, label, options, def) {
+    const cur = d[id] || def;
+    return `<div class="form-group">
+      <label class="label">${label}</label>
+      <select class="input" id="inp-${id}">
+        ${options.map(o => `<option value="${o}" ${o == cur ? 'selected' : ''}>${o}</option>`).join('')}
+      </select>
+    </div>`;
+  }
+
+  const suitSizes   = [44,46,48,50,52,54,56,58];
+  const collarSizes = Array.from({length:11}, (_,i) => 37+i);
+  const pantsSizes  = Array.from({length:11}, (_,i) => 44+i*2);
+  const shoeSizes   = Array.from({length:11}, (_,i) => 38+i);
+
   return `<div class="onboarding">
   ${pbHtml(1)}
   <h2 class="onboarding-title">Расскажите о себе</h2>
   <p class="onboarding-subtitle">Заполняется один раз — потом приложение делает всё само</p>
+
   <div class="form-group">
     <label class="label">Имя</label>
-    <input class="input" id="inp-name" type="text" placeholder="Как вас зовут?" value="${esc(S.ob.name||'')}">
+    <input class="input" id="inp-name" type="text" placeholder="Как вас зовут?" value="${esc(d.name||'')}">
   </div>
   <div class="form-group">
     <label class="label">Возраст</label>
-    <input class="input" id="inp-age" type="number" min="30" max="80" placeholder="50" value="${esc(S.ob.age||'')}">
+    <input class="input" id="inp-age" type="number" min="30" max="80" placeholder="50" value="${esc(d.age||'')}">
   </div>
+
+  <div class="divider"></div>
+  <p style="font-size:13px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.6px;margin-bottom:16px;">Рост и вес</p>
+
+  <div class="slider-group">
+    <div class="slider-header">
+      <label class="label" style="margin:0">Рост</label>
+      <span class="slider-value" id="sv-height">${h} см</span>
+    </div>
+    <input type="range" id="sl-height" min="155" max="210" value="${h}"
+      oninput="document.getElementById('sv-height').textContent=this.value+' см'">
+  </div>
+  <div class="slider-group">
+    <div class="slider-header">
+      <label class="label" style="margin:0">Вес</label>
+      <span class="slider-value" id="sv-weight">${w} кг</span>
+    </div>
+    <input type="range" id="sl-weight" min="50" max="180" value="${w}"
+      oninput="document.getElementById('sv-weight').textContent=this.value+' кг'">
+  </div>
+
+  <div class="divider"></div>
+  <p style="font-size:13px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.6px;margin-bottom:16px;">Размеры одежды</p>
+
+  ${selHtml('sizeSuit',   'Размер костюма / пиджака', suitSizes,   50)}
+  ${selHtml('sizeCollar', 'Размер рубашки (ворот)',   collarSizes, 41)}
+  ${selHtml('sizePants',  'Размер брюк (EU)',          pantsSizes,  52)}
+  ${selHtml('sizeShoes',  'Размер обуви (EU)',          shoeSizes,   43)}
+
+  <div class="divider"></div>
+  <p style="font-size:13px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.6px;margin-bottom:16px;">Местоположение</p>
+
+  <div class="form-group">
+    <label class="label">Ваш город</label>
+    <input class="input" id="inp-city" type="text" placeholder="Астана" value="${esc(d.city||'')}">
+  </div>
+  <button class="btn btn-outline" id="btn-geo" style="margin-bottom:16px;">📍 Определить автоматически</button>
+  <div id="geo-status" style="font-size:13px;color:var(--text-secondary);min-height:18px;margin-bottom:8px;"></div>
+
   <button class="btn btn-primary" id="btn-next" style="margin-top:8px;">Далее →</button>
 </div>`;
 }
@@ -427,8 +485,6 @@ function onbStep1() {
 function onbStep2() {
   const d = S.ob;
   const sliders = [
-    { id:'height', label:'Рост',            min:155, max:210, unit:'см', def:178 },
-    { id:'weight', label:'Вес',             min:50,  max:180, unit:'кг', def:85  },
     { id:'chest',  label:'Обхват груди',    min:80,  max:140, unit:'см', def:100 },
     { id:'waist',  label:'Обхват талии',    min:60,  max:140, unit:'см', def:90  },
     { id:'hips',   label:'Обхват бёдер',    min:80,  max:140, unit:'см', def:100 },
@@ -568,22 +624,16 @@ function onbStep7() {
   const d = S.ob;
   return `<div class="onboarding">
   ${pbHtml(7)}
-  <h2 class="onboarding-title">Ваш город</h2>
-  <p class="onboarding-subtitle">Для актуальной погоды каждый день</p>
-  <div class="form-group">
-    <label class="label">Город</label>
-    <input class="input" id="inp-city" type="text" placeholder="Астана" value="${esc(d.city||'Астана')}">
-  </div>
-  <button class="btn btn-outline" id="btn-geo" style="margin-bottom:12px;">📍 Определить автоматически</button>
-  <div id="geo-status" style="font-size:13px;color:var(--text-secondary);min-height:20px;margin-bottom:16px;"></div>
-  <div class="divider"></div>
+  <h2 class="onboarding-title">Почти готово!</h2>
+  <p class="onboarding-subtitle">Проверьте ваш профиль перед стартом</p>
   <div class="card" style="background:var(--bg-secondary);box-shadow:none;">
     <div class="sh">Ваш профиль</div>
-    <p style="font-size:14px;color:var(--text-secondary);line-height:1.9;">
-      👤 ${esc(d.name)}, ${d.age} лет<br>
+    <p style="font-size:14px;color:var(--text-secondary);line-height:2;">
+      👤 ${esc(d.name)}, ${d.age} лет · ${esc(d.city||'город не указан')}<br>
+      📏 ${d.height||'—'} см · ${d.weight||'—'} кг<br>
+      👔 Костюм ${d.sizeSuit||'—'} · Ворот ${d.sizeCollar||'—'} · Брюки ${d.sizePants||'—'} · Обувь ${d.sizeShoes||'—'}<br>
       🏋️ ${d.bodyType||'тип не выбран'} · ${d.colorType||'цветотип не определён'}<br>
-      👔 ${(d.wardrobe||[]).length} вещей<br>
-      🎨 ${d.stylePreference||'стиль не выбран'}
+      🎨 ${d.stylePreference||'стиль не выбран'} · ${(d.wardrobe||[]).length} вещей
     </p>
   </div>
   <div style="display:flex;gap:10px;margin-top:16px;">
@@ -595,12 +645,35 @@ function onbStep7() {
 
 function onbEvents(step) {
   if (step === 1) {
+    $('#btn-geo')?.addEventListener('click', async () => {
+      const st = document.getElementById('geo-status');
+      st.textContent = '⏳ Определяем...';
+      try {
+        const { lat, lon } = await Wx.geoLocation();
+        const city = await Wx.reverseCity(lat, lon);
+        $('#inp-city').value = city;
+        S.ob.lat = lat; S.ob.lon = lon;
+        st.textContent = `✅ ${city}`;
+      } catch {
+        st.textContent = '❌ Не удалось. Введите вручную.';
+      }
+    });
     $('#btn-next').addEventListener('click', () => {
       const name = $('#inp-name').value.trim();
       const age  = parseInt($('#inp-age').value);
+      const city = $('#inp-city').value.trim();
       if (!name) { alert('Введите ваше имя'); return; }
       if (!age || age < 30 || age > 80) { alert('Введите корректный возраст (30–80)'); return; }
-      S.ob.name = name; S.ob.age = age;
+      if (!city) { alert('Укажите ваш город'); return; }
+      S.ob.name       = name;
+      S.ob.age        = age;
+      S.ob.height     = parseInt($('#sl-height').value);
+      S.ob.weight     = parseInt($('#sl-weight').value);
+      S.ob.sizeSuit   = $('#inp-sizeSuit').value;
+      S.ob.sizeCollar = $('#inp-sizeCollar').value;
+      S.ob.sizePants  = $('#inp-sizePants').value;
+      S.ob.sizeShoes  = $('#inp-sizeShoes').value;
+      S.ob.city       = city;
       S.step = 2; renderOnb();
     });
     return;
@@ -610,7 +683,7 @@ function onbEvents(step) {
 
   if (step === 2) {
     $('#btn-next').addEventListener('click', () => {
-      ['height','weight','chest','waist','hips','neck','sleeve','inseam'].forEach(id => {
+      ['chest','waist','hips','neck','sleeve','inseam'].forEach(id => {
         S.ob[id] = parseInt($(`#sl-${id}`).value);
       });
       S.step = 3; renderOnb();
@@ -677,22 +750,7 @@ function onbEvents(step) {
   }
 
   if (step === 7) {
-    $('#btn-geo').addEventListener('click', async () => {
-      const st = document.getElementById('geo-status');
-      st.textContent = '⏳ Определяем...';
-      try {
-        const { lat, lon } = await Wx.geoLocation();
-        const city = await Wx.reverseCity(lat, lon);
-        $('#inp-city').value = city;
-        S.ob.lat = lat; S.ob.lon = lon;
-        st.textContent = `✅ ${city}`;
-      } catch {
-        st.textContent = '❌ Не удалось. Введите вручную.';
-      }
-    });
     $('#btn-finish').addEventListener('click', () => {
-      const city = $('#inp-city').value.trim() || 'Астана';
-      S.ob.city = city;
       Store.saveProfile(S.ob);
       S.screen = 'home'; S.wx = null;
       renderHome();
