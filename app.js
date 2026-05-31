@@ -1,19 +1,15 @@
 'use strict';
 
 // ── CONFIG ──────────────────────────────────────────────────
-const WEATHER_URL  = 'https://api.open-meteo.com/v1/forecast';
-const GEOCODE_URL  = 'https://nominatim.openstreetmap.org/search';
-const REVERSE_URL  = 'https://nominatim.openstreetmap.org/reverse';
-const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
-const AI_MODEL     = 'claude-sonnet-4-6';
+const WEATHER_URL = 'https://api.open-meteo.com/v1/forecast';
+const GEOCODE_URL = 'https://nominatim.openstreetmap.org/search';
+const REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
 
 // ── STORAGE ──────────────────────────────────────────────────
 const Store = {
   getProfile: () => { try { const d = localStorage.getItem('ps_profile'); return d ? JSON.parse(d) : null; } catch { return null; } },
   saveProfile: (p) => localStorage.setItem('ps_profile', JSON.stringify(p)),
-  getKey: () => localStorage.getItem('ps_api_key') || '',
-  saveKey: (k) => localStorage.setItem('ps_api_key', k),
-  clear: () => { localStorage.removeItem('ps_profile'); localStorage.removeItem('ps_api_key'); },
+  clear: () => localStorage.removeItem('ps_profile'),
 };
 
 // ── WEATHER ──────────────────────────────────────────────────
@@ -75,85 +71,241 @@ const Wx = {
   },
 };
 
-// ── AI ───────────────────────────────────────────────────────
-const AI = {
-  async call(messages, system, maxTokens = 1800) {
-    const key = Store.getKey();
-    if (!key) throw new Error('NO_KEY');
-    const r = await fetch(ANTHROPIC_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-allow-browser-access': 'true',
-      },
-      body: JSON.stringify({ model: AI_MODEL, max_tokens: maxTokens, system, messages }),
-    });
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({}));
-      if (r.status === 401) throw new Error('BAD_KEY');
-      throw new Error(e.error?.message || `Ошибка API: ${r.status}`);
-    }
-    const d = await r.json();
-    return d.content[0].text;
-  },
-  parse(text) {
-    const clean = text.replace(/^```[a-z]*\n?/m, '').replace(/\n?```$/m, '').trim();
-    return JSON.parse(clean);
-  },
-  outfitPrompt(profile, weather, event) {
-    const evNames = {
-      office:'офис / деловая встреча', negotiations:'переговоры с партнёрами',
-      home:'работа из дома', restaurant:'ужин в ресторане',
-      walk:'прогулка / отдых', conference:'деловая конференция / форум',
+// ── STYLIST (rule-based) ──────────────────────────────────────
+const Stylist = {
+  suggest(profile, weather, event) {
+    const temp      = weather.temperature_2m;
+    const code      = weather.weather_code;
+    const wardrobe  = profile.wardrobe || [];
+    const bodyType  = profile.bodyType || 'rectangle';
+    const colorType = profile.colorType || 'Зима';
+    const zones     = profile.problemZones || [];
+    const style     = profile.stylePreference || 'Smart casual';
+
+    const items = [];
+    const outer = this.outerwear(temp, wardrobe);
+    if (outer) items.push(outer);
+    const top = this.topLayer(event, style, wardrobe);
+    if (top) items.push(top);
+    items.push(this.shirt(event, style, wardrobe));
+    items.push(this.pants(event, style, wardrobe, zones));
+    items.push(this.shoes(event, style, wardrobe));
+
+    return {
+      title:         this.title(event),
+      subtitle:      this.subtitle(event),
+      weatherNote:   this.weatherNote(temp, code),
+      trendNote:     this.trendNote(event),
+      items,
+      palette:       this.palette(colorType),
+      combinations:  this.combos(items),
+      colorRule:     this.colorRule(colorType),
+      stylistTip:    this.stylistTip(bodyType, zones),
+      confidenceTip: this.confidenceTip(),
     };
-    return `Ты — профессиональный мужской стилист. Подбери образ для клиента.
+  },
 
-КЛИЕНТ: ${profile.name}, ${profile.age} лет
-Телосложение: ${profile.bodyType || 'не указано'}
-Проблемные зоны: ${(profile.problemZones || []).join(', ') || 'нет'}
-Цветотип: ${profile.colorType || 'не определён'}
-Стиль: ${profile.stylePreference || 'смешанный'}
-Гардероб: ${(profile.wardrobe || []).join(', ')}
+  pick(list, wardrobe) {
+    return list.find(i => wardrobe.includes(i)) || list[0];
+  },
 
-ПОГОДА: ${weather.temperature_2m}°C (ощущается ${weather.apparent_temperature}°C), ${Wx.desc(weather.weather_code)}, ветер ${weather.wind_speed_10m} км/ч, влажность ${weather.relative_humidity_2m}%
+  outerwear(temp, wardrobe) {
+    if (temp >= 18) return null;
+    let list, color, colorName, reason;
+    if (temp < 0) {
+      list = ['Пуховик','Дублёнка','Пальто']; color = '#263238'; colorName = 'тёмно-серый';
+      reason = 'Мороз — тёплая верхняя одежда обязательна';
+    } else if (temp < 10) {
+      list = ['Пальто','Тренч','Кожаная куртка','Дублёнка']; color = '#4E342E'; colorName = 'тёмно-коричневый';
+      reason = 'Холодно — пальто или тренч защитят и добавят элегантности';
+    } else {
+      list = ['Лёгкий плащ','Тренч','Пальто']; color = '#455A64'; colorName = 'серо-синий';
+      reason = 'Прохладно с утра — лёгкое пальто будет кстати';
+    }
+    return { name: this.pick(list, wardrobe), color, colorName, reason };
+  },
 
-МЕРОПРИЯТИЕ: ${evNames[event] || event}
+  topLayer(event, style, wardrobe) {
+    const formal = ['office','negotiations','conference'];
+    if (!formal.includes(event) && style !== 'Строго деловой' && event !== 'restaurant') return null;
+    const list = ['Тёмно-синий костюм','Серый костюм','Блейзер','Пиджак casual'];
+    const name = this.pick(list, wardrobe);
+    const map = {
+      'Тёмно-синий костюм': ['#1B2A4A','тёмно-синий'],
+      'Серый костюм':       ['#546E7A','тёмно-серый'],
+      'Блейзер':            ['#37474F','антрацит'],
+      'Пиджак casual':      ['#4A4A4A','тёмный'],
+    };
+    const [color, colorName] = map[name] || ['#37474F','тёмный'];
+    return { name, color, colorName, reason: 'Основа образа — задаёт уровень формальности' };
+  },
 
-Ответь СТРОГО JSON (без markdown, без \`\`\`):
-{
-  "title": "название образа",
-  "subtitle": "для кого и куда",
-  "weatherNote": "как погода влияет на выбор вещей",
-  "trendNote": "актуальный тренд, использованный в образе",
-  "items": [
-    {"name": "вещь", "color": "#XXXXXX", "colorName": "цвет", "reason": "почему (учти фигуру и зоны)"}
-  ],
-  "palette": [
-    {"color": "#XXXXXX", "role": "основной"},
-    {"color": "#XXXXXX", "role": "средний"},
-    {"color": "#XXXXXX", "role": "акцент"}
-  ],
-  "combinations": [
-    {"name": "Базовое", "description": "описание"},
-    {"name": "С акцентом", "description": "описание"},
-    {"name": "Монохром", "description": "описание"}
-  ],
-  "colorRule": "почему эти цвета работают вместе (2–3 предложения)",
-  "stylistTip": "деталь, которая поднимет образ на уровень выше",
-  "confidenceTip": "как носить с достоинством в 50+"
-}`;
+  shirt(event, style, wardrobe) {
+    const formal = ['office','negotiations','conference'].includes(event) || style === 'Строго деловой';
+    const list = formal
+      ? ['Белая рубашка','Голубая рубашка','Рубашка в клетку','Водолазка','Свитер V-вырез','Пуловер']
+      : ['Водолазка','Свитер V-вырез','Пуловер','Рубашка в клетку','Белая рубашка','Голубая рубашка'];
+    const name = this.pick(list, wardrobe);
+    const map = {
+      'Белая рубашка':    ['#F5F5F5','белый'],
+      'Голубая рубашка':  ['#90CAF9','голубой'],
+      'Рубашка в клетку': ['#8D6E63','тёплый коричневый'],
+      'Водолазка':        ['#37474F','тёмно-серый'],
+      'Свитер V-вырез':   ['#5D4037','коричневый'],
+      'Пуловер':          ['#78909C','серо-голубой'],
+    };
+    const [color, colorName] = map[name] || ['#ECEFF1','светлый'];
+    return { name, color, colorName, reason: formal ? 'Чистая рубашка — основа делового образа' : 'Создаёт правильный баланс между стилем и комфортом' };
+  },
+
+  pants(event, style, wardrobe, zones) {
+    const formal = ['office','negotiations','conference'];
+    let list;
+    if (formal.includes(event) || style === 'Строго деловой') {
+      list = ['Классические тёмно-синие','Чёрные классические','Классические серые','Чинос','Тёмные джинсы'];
+    } else if (event === 'home') {
+      list = ['Чинос','Тёмные джинсы','Классические серые','Классические тёмно-синие','Чёрные классические'];
+    } else {
+      list = ['Чинос','Тёмные джинсы','Классические тёмно-синие','Чёрные классические','Классические серые'];
+    }
+    const name = this.pick(list, wardrobe);
+    const map = {
+      'Классические тёмно-синие': ['#1B2A4A','тёмно-синий'],
+      'Чёрные классические':      ['#1C1C1C','чёрный'],
+      'Классические серые':       ['#607D8B','серый'],
+      'Тёмные джинсы':            ['#263238','тёмный индиго'],
+      'Чинос':                    ['#A1887F','бежево-коричневый'],
+    };
+    const [color, colorName] = map[name] || ['#455A64','тёмный'];
+    let reason = 'Хорошо сочетается с верхней частью образа';
+    if (zones.includes('Короткие ноги')) reason = 'Монохромный низ визуально удлиняет силуэт';
+    if (zones.includes('Живот / талия')) reason = 'Прямой крой без манжет создаёт стройный силуэт';
+    return { name, color, colorName, reason };
+  },
+
+  shoes(event, style, wardrobe) {
+    const formal = ['office','negotiations','conference'];
+    let list;
+    if (formal.includes(event) || style === 'Строго деловой') {
+      list = ['Чёрные оксфорды','Коричневые туфли','Дерби','Лоферы','Ботинки'];
+    } else if (event === 'restaurant') {
+      list = ['Лоферы','Коричневые туфли','Чёрные оксфорды','Дерби','Ботинки'];
+    } else {
+      list = ['Лоферы','Белые кроссовки','Ботинки','Дерби','Коричневые туфли'];
+    }
+    const name = this.pick(list, wardrobe);
+    const map = {
+      'Чёрные оксфорды':   ['#1C1C1C','чёрный'],
+      'Коричневые туфли':  ['#5D4037','тёмно-коричневый'],
+      'Лоферы':            ['#4E342E','тёмно-коричневый'],
+      'Дерби':             ['#37474F','тёмный'],
+      'Белые кроссовки':   ['#FAFAFA','белый'],
+      'Ботинки':           ['#3E2723','тёмно-коричневый'],
+    };
+    const [color, colorName] = map[name] || ['#1C1C1C','тёмный'];
+    return { name, color, colorName, reason: 'Завершает образ и задаёт уровень формальности' };
+  },
+
+  palette(ct) {
+    const p = {
+      'Весна': [{ color:'#DEB887',role:'основной' },{ color:'#87CEEB',role:'средний' },{ color:'#F4A460',role:'акцент' }],
+      'Лето':  [{ color:'#708090',role:'основной' },{ color:'#B0C4DE',role:'средний' },{ color:'#9FAFB9',role:'акцент' }],
+      'Осень': [{ color:'#5D4037',role:'основной' },{ color:'#556B2F',role:'средний' },{ color:'#DAA520',role:'акцент' }],
+      'Зима':  [{ color:'#1C1C1C',role:'основной' },{ color:'#37474F',role:'средний' },{ color:'#1565C0',role:'акцент' }],
+    };
+    return p[ct] || p['Зима'];
+  },
+
+  colorRule(ct) {
+    const r = {
+      'Весна': 'Цветотип "Весна" — тёплые, светлые, свежие оттенки. Бежевый с голубым создают мягкий элегантный контраст. Избегайте холодных тёмных серых.',
+      'Лето':  'Цветотип "Лето" — холодные приглушённые тона без резких контрастов. Серо-голубые оттенки создают утончённый образ. Яркие цвета — только маленьким акцентом.',
+      'Осень': 'Цветотип "Осень" — тёплые землистые оттенки. Коричневый, оливковый и горчичный работают как единая природная гамма. Избегайте холодных серых и пастельных розовых.',
+      'Зима':  'Цветотип "Зима" любит контрасты: тёмный с белым или ярким. Тёмно-синий с белой рубашкой — классика вашего типа. Яркий акцент в галстуке или нагрудном платке — финальный штрих.',
+    };
+    return r[ct] || r['Зима'];
+  },
+
+  combos(items) {
+    const names = items.slice(0, 3).map(i => i.name).join(' + ');
+    return [
+      { name: 'Базовое',    description: names || 'Классическое сочетание вещей' },
+      { name: 'С акцентом', description: 'Добавьте нагрудный платок или часы — небольшая деталь меняет весь образ' },
+      { name: 'Монохром',   description: 'Подберите рубашку в тон брюкам — тёмные оттенки одного цвета визуально вытягивают силуэт' },
+    ];
+  },
+
+  stylistTip(bodyType, zones) {
+    const zoneTips = {
+      'Живот / талия':  'Расстёгнутый пиджак и тёмная рубашка навыпуск — два главных приёма для скрытия живота.',
+      'Короткая шея':   'Расстёгнутый ворот или V-вырез удлиняют шею визуально. Откажитесь от плотного узла галстука.',
+      'Короткие ноги':  'Брюки без манжет + обувь в тон брюкам создают непрерывную вертикаль, удлиняя силуэт.',
+      'Широкие плечи':  'Тёмный верх и однотонные вещи без горизонтальных полос уравновесят пропорции.',
+      'Узкие плечи':    'Структурированный пиджак с мягкими подплечниками добавит ширины и уверенности.',
+    };
+    for (const z of zones) {
+      if (zoneTips[z]) return zoneTips[z];
+    }
+    const bt = {
+      oval:      'Расстегните пиджак — V-линия визуально вытягивает фигуру.',
+      rectangle: 'Структурированные плечи и приталенный силуэт создадут нужные пропорции.',
+      triangle:  'Тёмный верх уравновесит широкие плечи — избегайте горизонтальных полос.',
+      inverted:  'Светлый верх + тёмный низ добавит баланс и объём нижней части.',
+      trapezoid: 'Вертикальные линии на рубашке и прямые брюки — ваш выигрышный приём.',
+    };
+    return bt[bodyType] || 'Уложите нагрудный платок — эта деталь мгновенно поднимает образ на уровень выше.';
+  },
+
+  confidenceTip() {
+    const tips = [
+      'Осанка — лучший аксессуар. Прямая спина делает любой образ дороже на порядок.',
+      'Мужчина в 50+ носит одежду, а не наоборот. Уверенность — главная деталь образа.',
+      'Подойдите к зеркалу и убедитесь, что всё сидит по фигуре. Посадка важнее бренда.',
+      'Хорошо подобранные часы или ремень завершают образ лучше любого галстука.',
+    ];
+    return tips[new Date().getDay() % tips.length];
+  },
+
+  weatherNote(temp, code) {
+    const isRain = code >= 51 && code <= 82;
+    const rain = isRain ? ' Возьмите зонт.' : '';
+    if (temp < 0)  return `Мороз ${Math.abs(Math.round(temp))}°C — многослойность обязательна. Термобельё под рубашку сохранит тепло.${rain}`;
+    if (temp < 10) return `Холодно (${Math.round(temp)}°C) — верхняя одежда необходима. Шарф добавит тепла и элегантности.${rain}`;
+    if (temp < 18) return `Прохладно (${Math.round(temp)}°C) — лёгкая верхняя одежда не помешает, особенно вечером.${rain}`;
+    if (temp < 25) return `Комфортная температура (${Math.round(temp)}°C) — можно обойтись без верхней одежды.${rain}`;
+    return `Тепло (${Math.round(temp)}°C) — выбирайте лёгкие дышащие ткани. Хлопок предпочтительнее.${rain}`;
+  },
+
+  trendNote(event) {
+    const t = {
+      office:       'Тренд сезона — тихая роскошь: минимализм, качественные ткани, никаких логотипов.',
+      negotiations: 'Power dressing через цвет: тёмно-синий сигнализирует о надёжности и компетентности.',
+      restaurant:   'Smart elegant: пиджак без галстука с хорошей рубашкой — современный ресторанный дресс-код.',
+      home:         'Elevated casual: чинос + структурированный джемпер — комфортно и намеренно стильно.',
+      walk:         'Refined casual: тёмные джинсы + блейзер — граница между отдыхом и стилем.',
+      conference:   'Authority look: костюм без галстука — знак современности и уверенности.',
+    };
+    return t[event] || 'Минимализм и качество материалов — главный тренд делового гардероба этого сезона.';
+  },
+
+  title(event) {
+    const t = { office:'Деловой образ', negotiations:'Образ для переговоров', home:'Комфортный рабочий день', restaurant:'Вечерний образ', walk:'Casual прогулка', conference:'Конференц-образ' };
+    return t[event] || 'Образ дня';
+  },
+
+  subtitle(event) {
+    const s = { office:'Профессионально, уверенно, уместно', negotiations:'Производите впечатление с первых секунд', home:'Работаете дома — выглядите собранно', restaurant:'Элегантно, без излишней формальности', walk:'Свежо, стильно, без усилий', conference:'Авторитетно среди коллег и партнёров' };
+    return s[event] || 'Подобрано под ваш профиль и погоду';
   },
 };
 
 // ── STATIC DATA ───────────────────────────────────────────────
 const BODY_TYPES = [
-  { id: 'rectangle', icon: '⬜', name: 'Прямоугольник', desc: 'Плечи ≈ талия ≈ бёдра' },
-  { id: 'triangle',  icon: '🔻', name: 'Треугольник',   desc: 'Широкие плечи, узкие бёдра' },
-  { id: 'inverted',  icon: '🔺', name: 'Обр. треуг.',   desc: 'Узкие плечи, широкие бёдра' },
-  { id: 'oval',      icon: '⭕', name: 'Овал',          desc: 'Округлая талия, живот' },
-  { id: 'trapezoid', icon: '🔷', name: 'Трапеция',      desc: 'Немного шире внизу' },
+  { id:'rectangle', icon:'⬜', name:'Прямоугольник', desc:'Плечи ≈ талия ≈ бёдра' },
+  { id:'triangle',  icon:'🔻', name:'Треугольник',   desc:'Широкие плечи, узкие бёдра' },
+  { id:'inverted',  icon:'🔺', name:'Обр. треуг.',   desc:'Узкие плечи, широкие бёдра' },
+  { id:'oval',      icon:'⭕', name:'Овал',          desc:'Округлая талия, живот' },
+  { id:'trapezoid', icon:'🔷', name:'Трапеция',      desc:'Немного шире внизу' },
 ];
 
 const PROBLEM_ZONES = [
@@ -162,38 +314,16 @@ const PROBLEM_ZONES = [
 ];
 
 const COLOR_TYPES = {
-  'Весна': { desc: 'Тёплые светлые цвета — бежевый, коралловый, светло-синий.', cols: ['#F4A460','#FF7F50','#87CEEB'] },
-  'Лето':  { desc: 'Холодные пастельные тона — серо-голубой, лавандовый, розово-серый.', cols: ['#B0C4DE','#DDA0DD','#D3D3D3'] },
-  'Осень': { desc: 'Тёплые насыщенные цвета — терракота, оливковый, горчичный.', cols: ['#CD853F','#556B2F','#DAA520'] },
-  'Зима':  { desc: 'Холодные контрастные цвета — чёрный, белый, ярко-синий, красный.', cols: ['#1C1C1C','#FFFFFF','#0047AB'] },
+  'Весна': { desc:'Тёплые светлые цвета — бежевый, коралловый, светло-синий.',        cols:['#F4A460','#FF7F50','#87CEEB'] },
+  'Лето':  { desc:'Холодные пастельные тона — серо-голубой, лавандовый, розово-серый.', cols:['#B0C4DE','#DDA0DD','#D3D3D3'] },
+  'Осень': { desc:'Тёплые насыщенные цвета — терракота, оливковый, горчичный.',         cols:['#CD853F','#556B2F','#DAA520'] },
+  'Зима':  { desc:'Холодные контрастные цвета — чёрный, белый, ярко-синий, красный.',   cols:['#1C1C1C','#FFFFFF','#0047AB'] },
 };
 
-const SKIN_OPTS = [
-  { id:'very_light', label:'Очень светлая', dot:'#FDEBD0' },
-  { id:'light',      label:'Светлая',       dot:'#F5CBA7' },
-  { id:'olive',      label:'Оливковая',     dot:'#C9A84C' },
-  { id:'tan',        label:'Смуглая',       dot:'#A04000' },
-  { id:'dark',       label:'Тёмная',        dot:'#5D4037' },
-];
-const HAIR_OPTS = [
-  { id:'black',      label:'Чёрный',        dot:'#1C1C1C' },
-  { id:'dark_brown', label:'Тёмно-коричн.', dot:'#3D1C02' },
-  { id:'brown',      label:'Каштановый',    dot:'#7B3F00' },
-  { id:'blonde',     label:'Русый',         dot:'#D4AC0D' },
-  { id:'gray',       label:'Седой',         dot:'#B0BEC5' },
-];
-const EYE_OPTS = [
-  { id:'brown', label:'Карие',   dot:'#6D4C41' },
-  { id:'green', label:'Зелёные', dot:'#388E3C' },
-  { id:'gray',  label:'Серые',   dot:'#78909C' },
-  { id:'blue',  label:'Голубые', dot:'#1E88E5' },
-  { id:'black', label:'Чёрные',  dot:'#212121' },
-];
-const TONE_OPTS = [
-  { id:'warm',    label:'Тёплый (золотистый)', dot:'#F9A825' },
-  { id:'cool',    label:'Холодный (розовый)',  dot:'#E91E63' },
-  { id:'neutral', label:'Нейтральный',         dot:'#9E9E9E' },
-];
+const SKIN_OPTS  = [{ id:'very_light',label:'Очень светлая',dot:'#FDEBD0'},{ id:'light',label:'Светлая',dot:'#F5CBA7'},{ id:'olive',label:'Оливковая',dot:'#C9A84C'},{ id:'tan',label:'Смуглая',dot:'#A04000'},{ id:'dark',label:'Тёмная',dot:'#5D4037'}];
+const HAIR_OPTS  = [{ id:'black',label:'Чёрный',dot:'#1C1C1C'},{ id:'dark_brown',label:'Тёмно-коричн.',dot:'#3D1C02'},{ id:'brown',label:'Каштановый',dot:'#7B3F00'},{ id:'blonde',label:'Русый',dot:'#D4AC0D'},{ id:'gray',label:'Седой',dot:'#B0BEC5'}];
+const EYE_OPTS   = [{ id:'brown',label:'Карие',dot:'#6D4C41'},{ id:'green',label:'Зелёные',dot:'#388E3C'},{ id:'gray',label:'Серые',dot:'#78909C'},{ id:'blue',label:'Голубые',dot:'#1E88E5'},{ id:'black',label:'Чёрные',dot:'#212121'}];
+const TONE_OPTS  = [{ id:'warm',label:'Тёплый (золотистый)',dot:'#F9A825'},{ id:'cool',label:'Холодный (розовый)',dot:'#E91E63'},{ id:'neutral',label:'Нейтральный',dot:'#9E9E9E'}];
 
 const WARDROBE = {
   'Верхняя одежда':    ['Пальто','Тренч','Пуховик','Дублёнка','Кожаная куртка','Лёгкий плащ'],
@@ -222,11 +352,10 @@ const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 let S = {
   screen: 'home',
   step: 1,
-  ob: {},             // onboarding data
-  colorQ: {},         // color type answers
+  ob: {},
+  colorQ: {},
   wx: null,
   wxLoading: false,
-  aiLoading: false,
   outfit: null,
   outfitErr: null,
   event: null,
@@ -241,8 +370,7 @@ function go(screen) {
 }
 
 function render() {
-  const profile = Store.getProfile();
-  if (!profile) { renderWelcome(); return; }
+  if (!Store.getProfile()) { renderWelcome(); return; }
   if (S.screen === 'profile') { renderProfile(); return; }
   renderHome();
 }
@@ -253,7 +381,7 @@ function renderWelcome() {
 <div class="welcome">
   <div class="welcome-logo">👔</div>
   <h1 class="welcome-title">Карманный стилист</h1>
-  <p class="welcome-subtitle">ИИ-помощник подберёт образ под погоду и событие каждое утро</p>
+  <p class="welcome-subtitle">Подберёт образ под погоду и событие каждое утро</p>
   <button class="btn btn-primary" id="btn-start" style="max-width:260px;">Начать →</button>
 </div>`;
   $('#btn-start').addEventListener('click', () => { S.step = 1; S.ob = {}; S.colorQ = {}; renderOnb(); });
@@ -272,10 +400,10 @@ function pbHtml(cur) {
   ).join('')}</div><p class="step-label">Шаг ${cur} из 7</p>`;
 }
 
-function backNext(step, nextLabel = 'Далее →') {
+function backNext() {
   return `<div style="display:flex;gap:10px;margin-top:20px;">
     <button class="btn btn-outline" id="btn-back" style="flex:1;">← Назад</button>
-    <button class="btn btn-primary" id="btn-next" style="flex:2;">${nextLabel}</button>
+    <button class="btn btn-primary" id="btn-next" style="flex:2;">Далее →</button>
   </div>`;
 }
 
@@ -283,7 +411,7 @@ function onbStep1() {
   return `<div class="onboarding">
   ${pbHtml(1)}
   <h2 class="onboarding-title">Расскажите о себе</h2>
-  <p class="onboarding-subtitle">Заполняется один раз — потом ИИ делает всё сам</p>
+  <p class="onboarding-subtitle">Заполняется один раз — потом приложение делает всё само</p>
   <div class="form-group">
     <label class="label">Имя</label>
     <input class="input" id="inp-name" type="text" placeholder="Как вас зовут?" value="${esc(S.ob.name||'')}">
@@ -292,11 +420,6 @@ function onbStep1() {
     <label class="label">Возраст</label>
     <input class="input" id="inp-age" type="number" min="30" max="80" placeholder="50" value="${esc(S.ob.age||'')}">
   </div>
-  <div class="form-group">
-    <label class="label">API-ключ Anthropic</label>
-    <input class="input" id="inp-key" type="password" placeholder="sk-ant-api03-..." value="${esc(Store.getKey())}">
-    <p class="api-hint">Нужен для генерации образов. Хранится только в вашем браузере.<br>Получить: console.anthropic.com → API Keys</p>
-  </div>
   <button class="btn btn-primary" id="btn-next" style="margin-top:8px;">Далее →</button>
 </div>`;
 }
@@ -304,14 +427,14 @@ function onbStep1() {
 function onbStep2() {
   const d = S.ob;
   const sliders = [
-    { id:'height', label:'Рост',              min:155, max:210, unit:'см', def:178 },
-    { id:'weight', label:'Вес',               min:50,  max:180, unit:'кг', def:85  },
-    { id:'chest',  label:'Обхват груди',      min:80,  max:140, unit:'см', def:100 },
-    { id:'waist',  label:'Обхват талии',      min:60,  max:140, unit:'см', def:90  },
-    { id:'hips',   label:'Обхват бёдер',      min:80,  max:140, unit:'см', def:100 },
-    { id:'neck',   label:'Обхват шеи',        min:30,  max:55,  unit:'см', def:40  },
-    { id:'sleeve', label:'Длина рукава',      min:55,  max:90,  unit:'см', def:65  },
-    { id:'inseam', label:'Длина внутр. шва',  min:65,  max:95,  unit:'см', def:80  },
+    { id:'height', label:'Рост',            min:155, max:210, unit:'см', def:178 },
+    { id:'weight', label:'Вес',             min:50,  max:180, unit:'кг', def:85  },
+    { id:'chest',  label:'Обхват груди',    min:80,  max:140, unit:'см', def:100 },
+    { id:'waist',  label:'Обхват талии',    min:60,  max:140, unit:'см', def:90  },
+    { id:'hips',   label:'Обхват бёдер',    min:80,  max:140, unit:'см', def:100 },
+    { id:'neck',   label:'Обхват шеи',      min:30,  max:55,  unit:'см', def:40  },
+    { id:'sleeve', label:'Длина рукава',    min:55,  max:90,  unit:'см', def:65  },
+    { id:'inseam', label:'Длина внутр. шва',min:65,  max:95,  unit:'см', def:80  },
   ];
   return `<div class="onboarding">
   ${pbHtml(2)}
@@ -328,7 +451,7 @@ function onbStep2() {
         oninput="document.getElementById('sv-${s.id}').textContent=this.value+' ${s.unit}'">
     </div>`;
   }).join('')}
-  ${backNext(2)}
+  ${backNext()}
 </div>`;
 }
 
@@ -353,7 +476,7 @@ function onbStep3() {
       ${z}
     </label>`).join('')}
   </div>
-  ${backNext(3)}
+  ${backNext()}
 </div>`;
 }
 
@@ -369,7 +492,7 @@ function onbStep4() {
   return `<div class="onboarding">
   ${pbHtml(4)}
   <h2 class="onboarding-title">Цветотип</h2>
-  <p class="onboarding-subtitle">Поможет ИИ подбирать подходящие цвета одежды</p>
+  <p class="onboarding-subtitle">Помогает подбирать подходящие цвета одежды</p>
   <div class="form-group"><label class="label">Цвет кожи</label><div class="color-options">${opts(SKIN_OPTS,'skin')}</div></div>
   <div class="form-group"><label class="label">Цвет волос</label><div class="color-options">${opts(HAIR_OPTS,'hair')}</div></div>
   <div class="form-group"><label class="label">Цвет глаз</label><div class="color-options">${opts(EYE_OPTS,'eyes')}</div></div>
@@ -391,7 +514,7 @@ function onbStep4() {
 }
 
 function calcCT(q) {
-  const warm = q.tone === 'warm' || (q.hair === 'blonde' || q.hair === 'brown') && q.tone !== 'cool';
+  const warm = q.tone === 'warm' || ((q.hair === 'blonde' || q.hair === 'brown') && q.tone !== 'cool');
   const light = q.skin === 'very_light' || q.skin === 'light';
   if (warm && light)  return 'Весна';
   if (!warm && light) return 'Лето';
@@ -413,7 +536,7 @@ function onbStep5() {
       ${items.map(item => `<button class="pill wrd-pill ${sel.includes(item)?'active':''}" data-item="${esc(item)}">${item}</button>`).join('')}
     </div>
   </div>`).join('')}
-  ${backNext(5)}
+  ${backNext()}
 </div>`;
 }
 
@@ -422,7 +545,7 @@ function onbStep6() {
   return `<div class="onboarding">
   ${pbHtml(6)}
   <h2 class="onboarding-title">Стилевые предпочтения</h2>
-  <p class="onboarding-subtitle">Помогает ИИ точнее подбирать образы</p>
+  <p class="onboarding-subtitle">Помогает точнее подбирать образы</p>
   <div class="form-group">
     <label class="label">Предпочтительный стиль</label>
     <div class="pills">
@@ -437,7 +560,7 @@ function onbStep6() {
         `<button class="pill ta-pill ${d.trendAttitude===s?'active':''}" data-ta="${s}">${s}</button>`).join('')}
     </div>
   </div>
-  ${backNext(6)}
+  ${backNext()}
 </div>`;
 }
 
@@ -475,12 +598,9 @@ function onbEvents(step) {
     $('#btn-next').addEventListener('click', () => {
       const name = $('#inp-name').value.trim();
       const age  = parseInt($('#inp-age').value);
-      const key  = $('#inp-key').value.trim();
       if (!name) { alert('Введите ваше имя'); return; }
       if (!age || age < 30 || age > 80) { alert('Введите корректный возраст (30–80)'); return; }
-      if (!key) { alert('Введите API-ключ Anthropic (sk-ant-...)'); return; }
       S.ob.name = name; S.ob.age = age;
-      Store.saveKey(key);
       S.step = 2; renderOnb();
     });
     return;
@@ -602,14 +722,11 @@ function renderHome() {
     </div>
   </div>
 
-  <button class="btn btn-accent" id="btn-gen" ${!S.event||S.aiLoading?'disabled':''}>
-    ${S.aiLoading
-      ? '<span class="spinner" style="width:20px;height:20px;border-width:2px;"></span> Подбираем образ...'
-      : '✨ Подобрать образ'}
+  <button class="btn btn-accent" id="btn-gen" ${!S.event?'disabled':''}>
+    ✨ Подобрать образ
   </button>
 
   ${S.outfitErr ? `<div class="alert alert-error">${esc(S.outfitErr)}</div>` : ''}
-  ${S.aiLoading && !S.outfit ? '<div class="loading"><div class="spinner"></div><span>ИИ подбирает образ…</span></div>' : ''}
   ${outfitHtml()}
 </div>
 ${navHtml('home')}`;
@@ -690,8 +807,7 @@ function homeEvents() {
   $$('.ev-pill').forEach(p => p.addEventListener('click', () => {
     S.event = p.dataset.ev;
     $$('.ev-pill').forEach(x => x.classList.remove('active')); p.classList.add('active');
-    const btn = $('#btn-gen');
-    if (btn) { btn.disabled = false; }
+    const btn = $('#btn-gen'); if (btn) btn.disabled = false;
   }));
   $('#btn-gen')?.addEventListener('click', genOutfit);
   $$('.nav-btn').forEach(b => b.addEventListener('click', () => go(b.dataset.sc)));
@@ -712,27 +828,13 @@ async function loadWx() {
   finally { S.wxLoading = false; renderHome(); }
 }
 
-async function genOutfit() {
+function genOutfit() {
   if (!S.event) return;
   if (!S.wx) { S.outfitErr = 'Сначала загрузите погоду'; renderHome(); return; }
-  S.aiLoading = true; S.outfit = null; S.outfitErr = null;
+  S.outfitErr = null;
+  S.outfit = Stylist.suggest(Store.getProfile(), S.wx, S.event);
   renderHome();
-  try {
-    const profile = Store.getProfile();
-    const raw = await AI.call(
-      [{ role: 'user', content: AI.outfitPrompt(profile, S.wx, S.event) }],
-      'Ты профессиональный мужской стилист. Отвечай только JSON без markdown.',
-      1800
-    );
-    S.outfit = AI.parse(raw);
-  } catch (e) {
-    if (e.message === 'NO_KEY') S.outfitErr = 'API-ключ не задан. Добавьте его в Профиле.';
-    else if (e.message === 'BAD_KEY') S.outfitErr = 'Неверный API-ключ. Проверьте в разделе Профиль.';
-    else S.outfitErr = `Ошибка: ${e.message}`;
-  } finally {
-    S.aiLoading = false; renderHome();
-    if (S.outfit) setTimeout(() => document.getElementById('outfit')?.scrollIntoView({ behavior: 'smooth' }), 80);
-  }
+  setTimeout(() => document.getElementById('outfit')?.scrollIntoView({ behavior: 'smooth' }), 80);
 }
 
 // ── PROFILE ───────────────────────────────────────────────────
@@ -778,26 +880,15 @@ function renderProfile() {
     <p style="font-size:14px;">${esc(p.stylePreference||'—')} · Тренды: ${esc(p.trendAttitude||'—')}</p>
   </div>
 
-  <div class="card">
-    <div class="sh">API-ключ Anthropic</div>
-    <input class="input" id="inp-key-p" type="password" placeholder="sk-ant-..." value="${esc(Store.getKey())}">
-    <button class="btn btn-outline" id="btn-save-key" style="margin-top:8px;width:auto;padding:9px 18px;font-size:14px;">Сохранить</button>
-  </div>
-
   <div class="divider"></div>
   <button class="btn btn-outline" id="btn-reset" style="color:#c0392b;border-color:#e74c3c;">🗑️ Сбросить профиль</button>
 </div>
 ${navHtml('profile')}`;
 
-  $('#btn-save-key').addEventListener('click', () => {
-    Store.saveKey($('#inp-key-p').value.trim());
-    const b = $('#btn-save-key'); b.textContent = '✅ Сохранено';
-    setTimeout(() => { b.textContent = 'Сохранить'; }, 2000);
-  });
   $('#btn-reset').addEventListener('click', () => {
     if (!confirm('Сбросить профиль? Все данные будут удалены.')) return;
     Store.clear();
-    S = { screen:'home', step:1, ob:{}, colorQ:{}, wx:null, wxLoading:false, aiLoading:false, outfit:null, outfitErr:null, event:null };
+    S = { screen:'home', step:1, ob:{}, colorQ:{}, wx:null, wxLoading:false, outfit:null, outfitErr:null, event:null };
     renderWelcome();
   });
   $$('.nav-btn').forEach(b => b.addEventListener('click', () => go(b.dataset.sc)));
